@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Playground</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/monaco-editor@0.33.0/min/vs/editor/editor.main.css">
+  <script src="https://unpkg.com/monaco-editor@0.33.0/min/vs/loader.js"></script>
+  <!-- <script src="https://unpkg.com/prettier@2.3.2/standalone.js"></script>
+  <script src="https://unpkg.com/prettier@2.3.2/parser-babel.js"></script> -->
+  <script src="https://unpkg.com/@unocss/runtime"></script>
+
+  <style>
+    iframe#app {
+      width: 100%;
+      height: 100%;
+      border: none;
+    }
+  </style>
+</head>
+
+<body class="h-screen p-1 m-0 bg-dark-1 text-white">
+  <div class="flex h-full items-stretch gap-1">
+    <div class="flex flex-col w-2/5 gap-1 p-1">
+      <div class="hidden py-1px">CDN</div>
+      <div id="cdn-editor" class="hidden flex-auto"></div>
+      <div class="py-1px">App</div>
+      <div id="app-editor" class="h-60"></div>
+      <div class="py-1px">Script</div>
+      <div id="script-editor" class="flex-auto"></div>
+      <button id="btn-run" class="w-full py-2 text-center bg-green-400 text-white letter-wider">RUN!</button>
+    </div>
+    <div class="flex flex-col flex-auto gap-1 p-1">
+      <div id="wrapper" class="bg-white text-dark-400 p-2 gap-4 h-80">
+        <iframe id="app"></iframe>
+      </div>
+      <div class="py-1px">Diff</div>
+      <div id="diff-editor" class="flex-auto"></div>
+    </div>
+  </div>
+
+  <template id="app-init">
+    <div id="text1" class="item"></div>
+    <div id="text2" class="item"></div>
+
+    <button id="btn1">plus count1</button>
+    <button id="btn2">minus count1</button>
+    <button id="btn3">plus count2</button>
+    <button id="btn4">minus count2</button>
+
+    <div id="text3" class="item"></div>
+    <input type="text" id="input1">
+    <button id="btn5">plus age</button>
+    <button id="btn6">minus age</button>
+    <button id="btn7">random</button>
+  </template>
+
+  <script type="text/plain" id="effect">
+    let OriginalContainer = document.createElement('iframe')
+    let originalSetter = document.createElement('iframe').__lookupSetter__('innerHTML');
+
+    let $snapshot = null
+    function effect(fn) {
+      const originalFn = fn;
+      let timer;
+
+      function getStore() {
+        let store = {}
+        eventEmiter.types.forEach((v) => {
+          store[v] = new Function(`return ${v}`)();
+        });
+        return store;
+      }
+
+      function tick() {
+        if (timer) {
+          clearTimeout(timer);
+        }
+        timer = setTimeout(() => {
+          let newStore = getStore();
+
+          const queue = new Set();
+          for (let key in newStore) {
+            if (newStore[key] !== $snapshot[key]) {
+              queue.add(key);
+            }
+          }
+          eventEmiter.emits(queue);
+
+          $snapshot = newStore;
+        }, 0);
+      }
+
+      return async function () {
+        if ($snapshot === null) {
+          $snapshot = getStore();
+        }
+
+        const r = await originalFn.apply(this, arguments)
+        tick();
+        return r
+      };
+    }
+
+    const _addEventListener = EventTarget.prototype.addEventListener;
+    const SupportedType = ['click', 'input', 'change'];
+    EventTarget.prototype.addEventListener = function (type, listener, options) {
+      return SupportedType.includes(type) ? _addEventListener.call(this, type, effect(listener), options) : _addEventListener.call(this, type, listener, options)
+    };
+
+    Promise.prototype.then = effect(Promise.prototype.then);
+    Promise.prototype.catch = effect(Promise.prototype.catch);
+    Promise.prototype.finally = effect(Promise.prototype.finally);
+
+    const matches = new Map();
+
+    const eventEmiter = {
+      types: new Set(),
+      listeners: new Map(),
+      on: (type, listener) => {
+        eventEmiter.types.add(type);
+        if (!eventEmiter.listeners.has(type)) {
+          eventEmiter.listeners.set(type, []);
+        }
+        eventEmiter.listeners.get(type).push(listener);
+      },
+      emit: (type) => {
+        const queue = new Set();
+        if (!eventEmiter.listeners || !eventEmiter.listeners.has(type)) {
+          return;
+        }
+        queue.add(...eventEmiter.listeners.get(type));
+        return Promise.all([...queue].map((v) => v()));
+      },
+      emits: (types) => {
+        const queue = new Set();
+        types.forEach((type) => {
+          if (!eventEmiter.listeners || !eventEmiter.listeners.has(type)) {
+            return;
+          }
+          queue.add(...eventEmiter.listeners.get(type));
+        });
+        return Promise.all([...queue].map((v) => v()));
+      }
+    }
+
+    let canUpdate = false;
+
+    function render(fn) {
+      const fnBody = fn.toString().match(/[^{]+\{([\s\S]*)\}$/)[1].trim();
+
+      const regex = new RegExp(`([a-zA-Z_$][a-zA-Z0-9_$]*)\\.innerHTML\\s*=\\s*\`([\\s\\S]*?)?\\\``, 'g');
+
+      let match;
+      while ((match = regex.exec(fnBody)) !== null) {
+        const expressions = match[2].match(/(?<=\$\{)([^}]*)(?=\})/g);
+        const $data = new Set();
+
+        if (expressions) {
+          expressions.forEach((v) => {
+            v.match(/[a-zA-Z_$][a-zA-Z0-9_$]*(?:\.[a-zA-Z_$][a-zA-Z0-9_$]*)*/g).forEach((v) => {
+              $data.add(v);
+            });
+          });
+        }
+        let instance;
+
+        matches.set(
+          match[1],
+          instance = {
+            key: match[1],
+            $el: undefined,
+            $template: match[2],
+            $data,
+            create() {
+              this.$data.forEach((v) => {
+                eventEmiter.on(v, this.render.bind(this));
+              });
+
+              new Function('v', `v.$el=${this.key};`)(this);
+              new Function(`Object.defineProperty(${this.key},'innerHTML',{ set(val){  if(canUpdate){originalSetter.call(this, val)} }})`)();
+              this.render();
+            },
+            render() {
+              canUpdate = true
+              new Function('v', `v.$el.innerHTML=\`${this.$template}\``)(this);
+              canUpdate = false
+            }
+          }
+        );
+        instance.create();
+      }
+    }
+  </script>
+
+  <script id="target" type="text/plain">
+    const text1 = document.getElementById('text1');
+    const text2 = document.getElementById('text2');
+    const btn1 = document.getElementById('btn1');
+    const btn2 = document.getElementById('btn2');
+    const btn3 = document.getElementById('btn3');
+    const btn4 = document.getElementById('btn4');
+    let count1 = 0;
+    let count2 = 0;
+
+    render(() => {
+      text1.innerHTML = `
+      <div>count1 = ${count1} </div>
+      <div>count2 = ${count2} </div>
+      <div>count1+count2 = ${count1 + count2} </div>
+      `
+      text2.innerHTML = `count2 = ${count2}`;
+    });
+
+    btn1.addEventListener('click', async () => {
+      await new Promise((resolve) => {
+        let i = 1;
+        while (i--) { }
+        count1++;
+        resolve();
+      });
+    });
+
+    btn2.addEventListener('click', () => {
+      count1--;
+    });
+
+    btn3.addEventListener('click', async () => {
+      await new Promise((resolve) => {
+        let i = 1;
+        while (i--) { }
+        count2++;
+        resolve();
+      });
+    });
+
+    btn4.addEventListener('click', () => {
+      count2--;
+    });
+    const person = {
+      id: 1,
+      name: 'zhangsan',
+      age: 18
+    }
+
+    render(() => {
+      text3.innerHTML = `
+      <div>id = ${person.id} </div>
+      <div>name = ${person.name} </div>
+      <div>age = ${person.age} </div>
+      `
+    });
+
+    const input1 = document.getElementById('input1');
+    const btn5 = document.getElementById('btn5');
+    const btn6 = document.getElementById('btn6');
+    const btn7 = document.getElementById('btn7');
+
+    btn5.addEventListener('click', async () => {
+      await new Promise((resolve) => {
+        let i = 1;
+        while (i--) { }
+        person.age++;
+        resolve();
+      });
+    });
+
+    btn6.addEventListener('click', () => {
+      person.age--;
+    });
+
+    input1.value = person.name;
+    input1.addEventListener('input', () => {
+      person.name = input1.value;
+    });
+
+    btn7.addEventListener('click', () => {
+      person.name = Math.random().toString(36).substring(7);
+      person.age = Math.floor(Math.random() * 100);
+      input1.value = person.name;
+    });
+  </script>
+
+  <script id="origin" type="text/plain">
+    const text1 = document.getElementById('text1');
+    const text2 = document.getElementById('text2');
+    const btn1 = document.getElementById('btn1');
+    const btn2 = document.getElementById('btn2');
+    const btn3 = document.getElementById('btn3');
+    const btn4 = document.getElementById('btn4');
+    let count1 = 0;
+    let count2 = 0;
+
+    text1.innerHTML = `
+      <div>count1 = ${count1} </div>
+      <div>count2 = ${count2} </div>
+      <div>count1+count2 = ${count1 + count2} </div>
+      `
+    text2.innerHTML = `count2 = ${count2}`;
+
+    btn1.addEventListener('click', async () => {
+      await new Promise((resolve) => {
+        let i = 1;
+        while (i--) { }
+        count1++;
+        resolve();
+      });
+      text1.innerHTML = `
+      <div>count1 = ${count1} </div>
+      <div>count2 = ${count2} </div>
+      <div>count1+count2 = ${count1 + count2} </div>
+      `
+    });
+
+    btn2.addEventListener('click', () => {
+      count1--;
+      text1.innerHTML = `
+      <div>count1 = ${count1} </div>
+      <div>count2 = ${count2} </div>
+      <div>count1+count2 = ${count1 + count2} </div>
+      `
+    });
+
+    btn3.addEventListener('click', async () => {
+      await new Promise((resolve) => {
+        let i = 1;
+        while (i--) { }
+        count2++;
+        resolve();
+      });
+      text1.innerHTML = `
+      <div>count1 = ${count1} </div>
+      <div>count2 = ${count2} </div>
+      <div>count1+count2 = ${count1 + count2} </div>
+      `
+      text2.innerHTML = `count2 = ${count2}`;
+    });
+
+    btn4.addEventListener('click', () => {
+      count2--;
+      text1.innerHTML = `
+      <div>count1 = ${count1} </div>
+      <div>count2 = ${count2} </div>
+      <div>count1+count2 = ${count1 + count2} </div>
+      `
+      text2.innerHTML = `count2 = ${count2}`;
+    });
+    const person = {
+      id: 1,
+      name: 'zhangsan',
+      age: 18
+    }
+
+
+    text3.innerHTML = `
+      <div>id = ${person.id} </div>
+      <div>name = ${person.name} </div>
+      <div>age = ${person.age} </div>
+      `
+
+    const input1 = document.getElementById('input1');
+    const btn5 = document.getElementById('btn5');
+    const btn6 = document.getElementById('btn6');
+    const btn7 = document.getElementById('btn7');
+
+    btn5.addEventListener('click', async () => {
+      await new Promise((resolve) => {
+        let i = 1;
+        while (i--) { }
+        person.age++;
+        resolve();
+      });
+      text3.innerHTML = `
+      <div>id = ${person.id} </div>
+      <div>name = ${person.name} </div>
+      <div>age = ${person.age} </div>
+      `
+    });
+
+    btn6.addEventListener('click', () => {
+      person.age--;
+      text3.innerHTML = `
+      <div>id = ${person.id} </div>
+      <div>name = ${person.name} </div>
+      <div>age = ${person.age} </div>
+      `
+    });
+
+    input1.value = person.name;
+    input1.addEventListener('input', () => {
+      person.name = input1.value;
+      text3.innerHTML = `
+      <div>id = ${person.id} </div>
+      <div>name = ${person.name} </div>
+      <div>age = ${person.age} </div>
+      `
+    });
+
+    btn7.addEventListener('click', () => {
+      person.name = Math.random().toString(36).substring(7);
+      person.age = Math.floor(Math.random() * 100);
+      input1.value = person.name;
+      text3.innerHTML = `
+      <div>id = ${person.id} </div>
+      <div>name = ${person.name} </div>
+      <div>age = ${person.age} </div>
+      `
+    });
+  </script>
+
+  <script>
+    const appInit = document.getElementById('app-init');
+    const effectScript = document.getElementById('effect').textContent;
+    const targetScript = document.getElementById('target').textContent;
+    const originScript = document.getElementById('origin').textContent;
+
+    require.config({ paths: { 'vs': 'https://unpkg.com/monaco-editor@0.33.0/min/vs' } });
+    require(['vs/editor/editor.main'], function () {
+      const diffEditor = monaco.editor.createDiffEditor(document.getElementById('diff-editor'), {
+        theme: 'vs-dark',
+        automaticLayout: true
+      });
+
+      const originalModel = monaco.editor.createModel(originScript, 'javascript');
+      const modifiedModel = monaco.editor.createModel(targetScript, 'javascript');
+
+      diffEditor.setModel({
+        original: originalModel,
+        modified: modifiedModel
+      });
+
+
+      function initEditor(elementId, language) {
+        return monaco.editor.create(document.getElementById(elementId), {
+          value: '',
+          language: language,
+          theme: 'vs-dark',
+          automaticLayout: true
+        });
+      }
+
+      const cdnEditor = initEditor('cdn-editor', 'html');
+      const appEditor = initEditor('app-editor', 'html');
+      appEditor.setValue(appInit.innerHTML);
+      const scriptEditor = initEditor('script-editor', 'javascript');
+      scriptEditor.setValue(targetScript);
+
+      const btnRun = document.getElementById('btn-run')
+
+      btnRun.addEventListener('click', async () => {
+        const cdnCode = cdnEditor.getValue();
+        const appCode = appEditor.getValue();
+        const scriptCode = scriptEditor.getValue();
+        await parseCdn(cdnCode);
+
+        const wrapper = document.getElementById('wrapper');
+        wrapper.innerHTML = '';
+        const iframe = document.createElement('iframe');
+        iframe.id = 'app';
+        wrapper.appendChild(iframe);
+        // 清空之前的内容
+        iframe.srcdoc = '';
+        const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+        iframeDoc.open();
+        iframeDoc.write(`
+          <!DOCTYPE html>
+          <html lang="zh-CN">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>App</title>
+            <style>
+              body { margin: 0; padding: 0; }
+              .item{ padding: 10px; margin: 10px; border: 1px solid #ccc; }
+            </style>
+            <script>
+              ${effectScript}
+            <\/script>
+            </head>
+
+            <body>
+              ${appCode}
+              <script>
+                ${scriptCode}
+              <\/script>
+            </body>
+          </html>
+        `);
+        iframeDoc.close();
+      });
+      btnRun.click();
+      function parseCdn(code) {
+        const div = document.createElement('div');
+        div.innerHTML = code;
+        const scripts = div.querySelectorAll('script');
+        const links = div.querySelectorAll('link');
+        const promises = [];
+        scripts.forEach((script) => {
+          promises.push(new Promise((resolve) => {
+            const newScript = document.createElement('script');
+            newScript.src = script.src;
+            newScript.onload = resolve;
+            document.head.appendChild(newScript);
+          }));
+        });
+        links.forEach((link) => {
+          promises.push(new Promise((resolve) => {
+            const newLink = document.createElement('link');
+            newLink.href = link.href;
+            newLink.rel = 'stylesheet';
+            newLink.onload = resolve;
+            document.head.appendChild(newLink);
+          }));
+        });
+        return Promise.all(promises);
+      }
+
+
+    });
+  </script>
+</body>
+
+</html>
