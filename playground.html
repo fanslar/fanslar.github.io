@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Playground</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.33.0/min/vs/editor/editor.main.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.33.0/min/vs/loader.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prettier/2.3.2/standalone.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prettier/2.3.2/parser-babel.js"></script>
+  <script src="https://unpkg.com/@unocss/runtime"></script>
+</head>
+
+<body class="h-screen p-1 m-0 bg-dark-1 text-white">
+  <div class="flex h-full items-stretch gap-1">
+    <div class="flex flex-col w-1/2 gap-1 p-1">
+      <div class="py-1px">CDN</div>
+      <div id="cdn-editor" class="flex-auto"></div>
+      <div class="py-1px">App</div>
+      <div id="app-editor" class="flex-auto"></div>
+      <div class="py-1px">Script</div>
+      <div id="script-editor" class="flex-auto"></div>
+      <button id="btn-run" class="w-full py-2 text-center bg-green-400 text-white letter-wider">RUN!</button>
+    </div>
+
+    <div id="app" class="bg-white flex-auto p-2">
+
+    </div>
+  </div>
+  <script>
+    require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.33.0/min/vs' } });
+    require(['vs/editor/editor.main'], function () {
+      function initEditor(elementId, language) {
+        return monaco.editor.create(document.getElementById(elementId), {
+          value: '',
+          language: language,
+          theme: 'vs-dark',
+          automaticLayout: true
+        });
+      }
+
+      const cdnEditor = initEditor('cdn-editor', 'html');
+      const appEditor = initEditor('app-editor', 'html');
+      const scriptEditor = initEditor('script-editor', 'javascript');
+
+      document.getElementById('btn-run').addEventListener('click', async () => {
+        const cdnCode = cdnEditor.getValue();
+        const appCode = appEditor.getValue();
+        const scriptCode = scriptEditor.getValue();
+        await parseCdn(cdnCode);
+        const app = document.getElementById('app');
+        app.innerHTML = appCode;
+        eval(scriptCode);
+      });
+
+      function parseCdn(code) {
+        const div = document.createElement('div');
+        div.innerHTML = code;
+        const scripts = div.querySelectorAll('script');
+        const links = div.querySelectorAll('link');
+        const promises = [];
+        scripts.forEach((script) => {
+          promises.push(new Promise((resolve) => {
+            const newScript = document.createElement('script');
+            newScript.src = script.src;
+            newScript.onload = resolve;
+            document.head.appendChild(newScript);
+          }));
+        });
+        links.forEach((link) => {
+          promises.push(new Promise((resolve) => {
+            const newLink = document.createElement('link');
+            newLink.href = link.href;
+            newLink.rel = 'stylesheet';
+            newLink.onload = resolve;
+            document.head.appendChild(newLink);
+          }));
+        });
+        return Promise.all(promises);
+      }
+    });
+  </script>
+</body>
+
+</html>
